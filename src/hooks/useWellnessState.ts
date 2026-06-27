@@ -15,6 +15,7 @@ import type {
 import { evaluateSafetyBoundary } from '../utils/safetyRouter';
 import { analyzeJournalEntry } from '../utils/analytics';
 import { fetchMcpContext, updateEpisodicGraph } from '../utils/mcpSync';
+import { generateDynamicStrategy } from '../utils/llmService';
 
 /** Generates a unique ID using timestamp + random suffix. */
 function generateId(): string {
@@ -81,12 +82,23 @@ export function useWellnessState(): WellnessStateActions {
     };
   }, []);
 
+  /** Updates the dynamic coping strategy for a specific entry. */
+  const updateEntryStrategy = useCallback((id: string, strategy: string): void => {
+    setState((prev) => ({
+      ...prev,
+      entries: prev.entries.map((e) =>
+        e.id === id ? { ...e, dynamicStrategy: strategy } : e
+      ),
+    }));
+  }, []);
+
   /**
    * Adds a new journal entry through the full processing pipeline:
    * 1. Analyze text for sentiment, trigger, and category
    * 2. Check safety boundary for crisis keywords
    * 3. Update episodic graph with relational data
    * 4. Commit to state
+   * 5. Trigger asynchronous dynamic strategy generation
    */
   const addEntry = useCallback((text: string): void => {
     const trimmedText = text.trim();
@@ -95,8 +107,9 @@ export function useWellnessState(): WellnessStateActions {
     const analysis = analyzeJournalEntry(trimmedText);
     const isCrisis = evaluateSafetyBoundary(trimmedText);
 
+    const entryId = generateId();
     const entry: JournalEntry = {
-      id: generateId(),
+      id: entryId,
       timestamp: new Date().toISOString(),
       ...analysis,
     };
@@ -107,7 +120,13 @@ export function useWellnessState(): WellnessStateActions {
       isCrisisState: isCrisis || prev.isCrisisState,
       episodicGraph: updateEpisodicGraph(prev.episodicGraph, entry),
     }));
-  }, []);
+
+    // Trigger LLM strategy fetch asynchronously
+    generateDynamicStrategy(entry.trigger, entry.sentimentScore).then((strategy) => {
+      updateEntryStrategy(entryId, strategy);
+    });
+  }, [updateEntryStrategy]);
+
 
   /** Updates active filters (partial merge). */
   const setFilters = useCallback((filters: Partial<ActiveFilters>): void => {

@@ -160,6 +160,20 @@ const JournalView: React.FC<JournalViewProps> = ({
                   </div>
                 </div>
                 <p className="journal-view__entry-text">{entry.text}</p>
+                <div className="journal-view__strategy-box">
+                  <strong className="journal-view__strategy-title">
+                    💡 Dynamic Strategy ({entry.suggestedCategory})
+                  </strong>
+                  {entry.dynamicStrategy ? (
+                    <p className="journal-view__strategy-text" aria-live="polite">
+                      {entry.dynamicStrategy}
+                    </p>
+                  ) : (
+                    <p className="journal-view__strategy-text journal-view__strategy-text--loading" aria-live="polite">
+                      Generating personalized strategy...
+                    </p>
+                  )}
+                </div>
                 <div className="journal-view__entry-footer">
                   <span className="journal-view__trigger" aria-label={`Trigger: ${entry.trigger}`}>
                     <span aria-hidden="true">🔍</span> {entry.trigger}

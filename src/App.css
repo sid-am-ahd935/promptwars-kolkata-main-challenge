@@ -341,6 +341,35 @@
   margin-bottom: var(--space-3);
 }
 
+.journal-view__strategy-box {
+  background: var(--color-bg-secondary);
+  border: 1px dashed var(--color-border);
+  border-radius: var(--radius-md);
+  padding: var(--space-4);
+  margin-bottom: var(--space-4);
+}
+
+.journal-view__strategy-title {
+  display: block;
+  font-size: var(--font-size-xs);
+  text-transform: uppercase;
+  color: var(--color-accent);
+  letter-spacing: 0.05em;
+  margin-bottom: var(--space-2);
+}
+
+.journal-view__strategy-text {
+  font-size: var(--font-size-sm);
+  color: var(--color-text-primary);
+  line-height: 1.6;
+}
+
+.journal-view__strategy-text--loading {
+  color: var(--color-text-muted);
+  font-style: italic;
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
 .journal-view__entry-footer {
   display: flex;
   align-items: center;
