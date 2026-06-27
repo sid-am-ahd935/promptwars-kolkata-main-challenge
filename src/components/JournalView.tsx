@@ -168,58 +168,73 @@ const JournalView: React.FC<JournalViewProps> = ({
           </div>
         ) : (
           <ul className="journal-view__list" aria-label="List of journal entries">
-            {entries.map((entry) => (
-              <li key={entry.id} className="journal-view__entry">
-                <div className="journal-view__entry-header">
-                  <time
-                    className="journal-view__entry-time"
-                    dateTime={entry.timestamp}
-                  >
-                    {new Date(entry.timestamp).toLocaleString('en-IN', {
-                      day: 'numeric',
-                      month: 'short',
-                      year: 'numeric',
-                      hour: '2-digit',
-                      minute: '2-digit',
-                    })}
-                  </time>
-                  <div className="journal-view__entry-meta">
-                    <span
-                      className={sentimentBadgeClass(entry.sentimentScore)}
-                      aria-label={`Sentiment score: ${entry.sentimentScore} out of 10`}
+            {entries.map((entry) => {
+              const isAnalyzing = entry.trigger === 'analyzing...';
+              return (
+                <li key={entry.id} className={`journal-view__entry ${isAnalyzing ? 'journal-view__entry--analyzing' : ''}`}>
+                  <div className="journal-view__entry-header">
+                    <time
+                      className="journal-view__entry-time"
+                      dateTime={entry.timestamp}
                     >
-                      {entry.sentimentScore}/10
-                    </span>
-                    <span
-                      className={categoryClass(entry.suggestedCategory)}
-                      aria-label={`Category: ${entry.suggestedCategory}`}
-                    >
-                      {entry.suggestedCategory}
-                    </span>
+                      {new Date(entry.timestamp).toLocaleString('en-IN', {
+                        day: 'numeric',
+                        month: 'short',
+                        year: 'numeric',
+                        hour: '2-digit',
+                        minute: '2-digit',
+                      })}
+                    </time>
+                    {!isAnalyzing && (
+                      <div className="journal-view__entry-meta">
+                        <span
+                          className={sentimentBadgeClass(entry.sentimentScore)}
+                          aria-label={`Sentiment score: ${entry.sentimentScore} out of 10`}
+                        >
+                          {entry.sentimentScore}/10
+                        </span>
+                        <span
+                          className={categoryClass(entry.suggestedCategory)}
+                          aria-label={`Category: ${entry.suggestedCategory}`}
+                        >
+                          {entry.suggestedCategory}
+                        </span>
+                      </div>
+                    )}
                   </div>
-                </div>
-                <p className="journal-view__entry-text">{entry.text}</p>
-                <div className="journal-view__strategy-box">
-                  <strong className="journal-view__strategy-title">
-                    💡 Dynamic Strategy ({entry.suggestedCategory})
-                  </strong>
-                  {entry.dynamicStrategy ? (
-                    <p className="journal-view__strategy-text" aria-live="polite">
-                      {entry.dynamicStrategy}
-                    </p>
+                  <p className="journal-view__entry-text">{entry.text}</p>
+                  {isAnalyzing ? (
+                    <div className="journal-view__strategy-box" aria-live="polite">
+                      <p className="journal-view__strategy-text journal-view__strategy-text--loading">
+                        Analyzing reflection and identifying mental wellness triggers...
+                      </p>
+                    </div>
                   ) : (
-                    <p className="journal-view__strategy-text journal-view__strategy-text--loading" aria-live="polite">
-                      Generating personalized strategy...
-                    </p>
+                    <div className="journal-view__strategy-box">
+                      <strong className="journal-view__strategy-title">
+                        💡 Dynamic Strategy ({entry.suggestedCategory})
+                      </strong>
+                      {entry.dynamicStrategy ? (
+                        <p className="journal-view__strategy-text" aria-live="polite">
+                          {entry.dynamicStrategy}
+                        </p>
+                      ) : (
+                        <p className="journal-view__strategy-text journal-view__strategy-text--loading" aria-live="polite">
+                          Generating personalized strategy...
+                        </p>
+                      )}
+                    </div>
                   )}
-                </div>
-                <div className="journal-view__entry-footer">
-                  <span className="journal-view__trigger" aria-label={`Trigger: ${entry.trigger}`}>
-                    <span aria-hidden="true">🔍</span> {entry.trigger}
-                  </span>
-                </div>
-              </li>
-            ))}
+                  {!isAnalyzing && (
+                    <div className="journal-view__entry-footer">
+                      <span className="journal-view__trigger" aria-label={`Trigger: ${entry.trigger}`}>
+                        <span aria-hidden="true">🔍</span> {entry.trigger}
+                      </span>
+                    </div>
+                  )}
+                </li>
+              );
+            })}
           </ul>
         )}
       </div>

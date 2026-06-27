@@ -94,37 +94,82 @@ export function useWellnessState(): WellnessStateActions {
 
   /**
    * Adds a new journal entry through the full processing pipeline:
-   * 1. Analyze text for sentiment, trigger, and category
-   * 2. Check safety boundary for crisis keywords
-   * 3. Update episodic graph with relational data
-   * 4. Commit to state
-   * 5. Trigger asynchronous dynamic strategy generation
+   * 1. Check safety boundary synchronously first. If crisis, bypass all generative AI.
+   * 2. Otherwise, add placeholder entry to show loading indicators.
+   * 3. Trigger async Gemini analysis.
+   * 4. Once analysis resolves, update the entry details and episodic graph.
+   * 5. Trigger async coping strategy generation using final metrics.
    */
   const addEntry = useCallback((text: string): void => {
     const trimmedText = text.trim();
     if (trimmedText.length === 0) return;
 
-    const analysis = analyzeJournalEntry(trimmedText);
     const isCrisis = evaluateSafetyBoundary(trimmedText);
-
     const entryId = generateId();
-    const entry: JournalEntry = {
+
+    if (isCrisis) {
+      // Synchronously bypass all generative elements
+      const entry: JournalEntry = {
+        id: entryId,
+        timestamp: new Date().toISOString(),
+        text: trimmedText,
+        sentimentScore: 1,
+        trigger: 'crisis',
+        suggestedCategory: 'Coping',
+        dynamicStrategy: 'Crisis hotline support is active. Please use the resources below.',
+      };
+
+      setState((prev) => ({
+        ...prev,
+        entries: [entry, ...prev.entries],
+        isCrisisState: true,
+        episodicGraph: updateEpisodicGraph(prev.episodicGraph, entry),
+      }));
+      return;
+    }
+
+    // Render loading placeholders for the analytics metrics
+    const placeholderEntry: JournalEntry = {
       id: entryId,
       timestamp: new Date().toISOString(),
-      ...analysis,
+      text: trimmedText,
+      sentimentScore: 5,
+      trigger: 'analyzing...',
+      suggestedCategory: 'Mindfulness',
     };
 
     setState((prev) => ({
       ...prev,
-      entries: [entry, ...prev.entries],
-      isCrisisState: isCrisis || prev.isCrisisState,
-      episodicGraph: updateEpisodicGraph(prev.episodicGraph, entry),
+      entries: [placeholderEntry, ...prev.entries],
     }));
 
-    // Trigger LLM strategy fetch asynchronously
-    generateDynamicStrategy(entry.trigger, entry.sentimentScore).then((strategy) => {
-      updateEntryStrategy(entryId, strategy);
-    });
+    // Trigger async Gemini LLM analysis
+    analyzeJournalEntry(trimmedText)
+      .then((analysis) => {
+        setState((prev) => {
+          const updatedEntries = prev.entries.map((e) =>
+            e.id === entryId ? { ...e, ...analysis } : e
+          );
+          const resolvedEntry = updatedEntries.find((e) => e.id === entryId) || placeholderEntry;
+
+          return {
+            ...prev,
+            entries: updatedEntries,
+            episodicGraph: updateEpisodicGraph(prev.episodicGraph, resolvedEntry),
+          };
+        });
+
+        // Trigger dynamic strategy after analytics resolve
+        return generateDynamicStrategy(analysis.trigger, analysis.sentimentScore);
+      })
+      .then((strategy) => {
+        if (strategy) {
+          updateEntryStrategy(entryId, strategy);
+        }
+      })
+      .catch((error) => {
+        console.warn('Async analysis or strategy fetch failed:', error);
+      });
   }, [updateEntryStrategy]);
 
 
