@@ -223,6 +223,39 @@
   color: var(--color-text-muted);
 }
 
+.journal-view__button-group {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.journal-view__mic-btn {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-sm);
+  font-weight: 500;
+  transition: all var(--transition-base);
+}
+
+.journal-view__mic-btn:hover {
+  background: var(--color-surface-hover);
+  color: var(--color-text-primary);
+  border-color: var(--color-accent);
+}
+
+.journal-view__mic-btn--listening {
+  background: rgba(239, 68, 68, 0.15);
+  border-color: var(--color-danger);
+  color: #fca5a5;
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
 .journal-view__submit {
   display: flex;
   align-items: center;

@@ -6,9 +6,10 @@
  * with sentiment badges and category tags.
  */
 
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import type { JournalEntry } from '../types/wellness';
 import CrisisCard from './CrisisCard';
+import { useSpeechToText } from '../hooks/useSpeechToText';
 
 interface JournalViewProps {
   entries: JournalEntry[];
@@ -45,15 +46,37 @@ const JournalView: React.FC<JournalViewProps> = ({
   onResetCrisis,
 }) => {
   const [inputText, setInputText] = useState('');
+  const [baseText, setBaseText] = useState('');
+
+  const { isListening, transcript, startListening, stopListening, isSupported } = useSpeechToText();
+
+  useEffect(() => {
+    if (isListening && transcript) {
+      const cleanBase = baseText.trim();
+      setInputText(cleanBase ? `${cleanBase} ${transcript}` : transcript);
+    }
+  }, [transcript, isListening, baseText]);
+
+  const handleMicToggle = useCallback(() => {
+    if (isListening) {
+      stopListening();
+    } else {
+      setBaseText(inputText);
+      startListening();
+    }
+  }, [isListening, startListening, stopListening, inputText]);
 
   const handleSubmit = useCallback(
     (e: React.FormEvent) => {
       e.preventDefault();
       if (inputText.trim().length === 0) return;
+      if (isListening) {
+        stopListening();
+      }
       onSubmitEntry(inputText);
       setInputText('');
     },
-    [inputText, onSubmitEntry]
+    [inputText, onSubmitEntry, isListening, stopListening]
   );
 
   const handleKeyDown = useCallback(
@@ -61,12 +84,15 @@ const JournalView: React.FC<JournalViewProps> = ({
       if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
         e.preventDefault();
         if (inputText.trim().length > 0) {
+          if (isListening) {
+            stopListening();
+          }
           onSubmitEntry(inputText);
           setInputText('');
         }
       }
     },
-    [inputText, onSubmitEntry]
+    [inputText, onSubmitEntry, isListening, stopListening]
   );
 
   return (
@@ -98,14 +124,27 @@ const JournalView: React.FC<JournalViewProps> = ({
           <span id="journal-hint" className="journal-view__hint">
             Press Ctrl+Enter to submit quickly
           </span>
-          <button
-            type="submit"
-            className="journal-view__submit"
-            disabled={inputText.trim().length === 0}
-            aria-label="Submit journal entry"
-          >
-            <span aria-hidden="true">✨</span> Log Reflection
-          </button>
+          <div className="journal-view__button-group">
+            {isSupported && (
+              <button
+                type="button"
+                className={`journal-view__mic-btn ${isListening ? 'journal-view__mic-btn--listening' : ''}`}
+                onClick={handleMicToggle}
+                aria-label={isListening ? 'Stop Voice Journal' : 'Use Voice Journal'}
+                aria-pressed={isListening}
+              >
+                {isListening ? '🎙️ Listening...' : '🎙️ Voice Input'}
+              </button>
+            )}
+            <button
+              type="submit"
+              className="journal-view__submit"
+              disabled={inputText.trim().length === 0}
+              aria-label="Submit journal entry"
+            >
+              <span aria-hidden="true">✨</span> Log Reflection
+            </button>
+          </div>
         </div>
       </form>
 
