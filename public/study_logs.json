@@ -1,0 +1,8 @@
+[
+  { "subject": "Physics", "date": "2026-07-05", "type": "Mock Exam" },
+  { "subject": "Mathematics", "date": "2026-07-08", "type": "Unit Test" },
+  { "subject": "Chemistry", "date": "2026-07-10", "type": "Practical Exam" },
+  { "subject": "English Literature", "date": "2026-07-12", "type": "Essay Submission" },
+  { "subject": "Computer Science", "date": "2026-07-15", "type": "Lab Exam" },
+  { "subject": "Biology", "date": "2026-07-18", "type": "Final Exam" }
+]
