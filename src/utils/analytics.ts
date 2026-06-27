@@ -1,13 +1,51 @@
 /**
- * Generative Analytics Engine via Gemini
+ * Semantic NLP Pipeline & Episodic Graph Analytics Engine
  *
- * Upgrades the analytics system to perform sentiment analysis and trigger
- * extraction entirely via the Google Gemini LLM when an API key is available.
- * Gracefully falls back to local rules if the API call fails or the key is absent.
+ * Upgrades the text-analysis pipeline to use semantic trigger embeddings
+ * and guardrailed LLM sentiment extraction. Integrates a deterministic
+ * circuit breaker for immediate crisis intervention.
  */
 
 import type { JournalEntry } from '../types/wellness';
+import { evaluateSafetyBoundary } from './safetyRouter';
 import { GoogleGenerativeAI } from '@google/generative-ai';
+
+/** Baseline semantic anchors for trigger categories. */
+const BASELINE_TRIGGERS = [
+  { id: 'exam', text: 'school college exam test study physics homework assignment deadlines grades exam pressure study stress mathematics academic' },
+  { id: 'family', text: 'parents family home mother father mom dad sibling home pressure family conflict relationship parents expectations' },
+  { id: 'sleep', text: 'sleep tired exhausted insomnia fatigue rest physical health rest quality layout physical sleep issues' },
+  { id: 'social', text: 'friends lonely isolated alone peer peers social interaction social life bullying friend loneliness' },
+  { id: 'general', text: 'general daily life routine normal standard casual everyday activities routine day-to-day' }
+] as const;
+
+/** In-memory cache for trigger baseline embeddings. */
+let cachedBaselineEmbeddings: { id: string; values: number[] }[] | null = null;
+
+/** Calculates dot product of two vectors. */
+function dotProduct(a: number[], b: number[]): number {
+  return a.reduce((sum, val, i) => sum + val * b[i], 0);
+}
+
+/** Calculates magnitude of a vector. */
+function magnitude(a: number[]): number {
+  return Math.sqrt(a.reduce((sum, val) => sum + val * val, 0));
+}
+
+/** Calculates cosine similarity between two vectors. */
+function cosineSimilarity(a: number[], b: number[]): number {
+  const magA = magnitude(a);
+  const magB = magnitude(b);
+  if (magA === 0 || magB === 0) return 0;
+  return dotProduct(a, b) / (magA * magB);
+}
+
+/** Gets embedding vector using text-embedding-004 model. */
+async function getEmbedding(genAI: GoogleGenerativeAI, text: string): Promise<number[]> {
+  const model = genAI.getGenerativeModel({ model: 'text-embedding-004' });
+  const result = await model.embedContent(text);
+  return result.embedding.values;
+}
 
 /**
  * Deterministic local fallback analysis if the Gemini API key is missing or fails.
@@ -17,7 +55,6 @@ export function localFallbackAnalysis(text: string): Omit<JournalEntry, 'id' | '
   let sentimentScore = 5;
   let trigger = 'general';
 
-  // Fallback trigger mapping
   if (
     lowercase.includes('exam') ||
     lowercase.includes('test') ||
@@ -54,7 +91,6 @@ export function localFallbackAnalysis(text: string): Omit<JournalEntry, 'id' | '
     trigger = 'social';
   }
 
-  // Fallback sentiment keywords
   const positives = ['happy', 'good', 'great', 'wonderful', 'excited', 'calm', 'relaxed', 'accomplished'];
   const negatives = ['sad', 'stressed', 'anxious', 'worried', 'angry', 'frustrated', 'depressed', 'overwhelmed'];
 
@@ -82,14 +118,24 @@ export function localFallbackAnalysis(text: string): Omit<JournalEntry, 'id' | '
 }
 
 /**
- * Analyzes a journal entry using Google Gemini 1.5 Flash.
+ * Enterprise Semantic NLP Pipeline for Journal Reflection Analysis.
  *
- * @param text - The raw journal entry text.
- * @returns A promise resolving to the sentiment analysis details.
+ * @param text - The raw reflection text.
+ * @returns A promise resolving to the parsed sentiment, trigger, and category.
  */
 export async function analyzeJournalEntry(
   text: string
 ): Promise<Omit<JournalEntry, 'id' | 'timestamp'>> {
+  // Tier 1: Deterministic Circuit Breaker (Safety)
+  if (evaluateSafetyBoundary(text)) {
+    return {
+      text,
+      sentimentScore: 1,
+      trigger: 'Immediate Crisis Intervention',
+      suggestedCategory: 'Coping',
+    };
+  }
+
   const apiKey = (import.meta.env as any).VITE_GEMINI_API_KEY;
 
   if (!apiKey || typeof apiKey !== 'string' || apiKey.trim().length === 0) {
@@ -98,35 +144,50 @@ export async function analyzeJournalEntry(
 
   try {
     const genAI = new GoogleGenerativeAI(apiKey);
-    const model = genAI.getGenerativeModel({
+
+    // Tier 2: Semantic Trigger Classification via Cosine Similarity
+    if (!cachedBaselineEmbeddings) {
+      cachedBaselineEmbeddings = await Promise.all(
+        BASELINE_TRIGGERS.map(async (anchor) => {
+          const values = await getEmbedding(genAI, anchor.text);
+          return { id: anchor.id, values };
+        })
+      );
+    }
+
+    const inputEmbedding = await getEmbedding(genAI, text);
+
+    let matchedTrigger = 'general';
+    let highestSim = -1;
+
+    for (const anchor of cachedBaselineEmbeddings) {
+      const sim = cosineSimilarity(inputEmbedding, anchor.values);
+      if (sim > highestSim) {
+        highestSim = sim;
+        matchedTrigger = anchor.id;
+      }
+    }
+
+    // Tier 3: Guardrailed Sentiment Extraction
+    const sentimentModel = genAI.getGenerativeModel({
       model: 'gemini-1.5-flash',
       generationConfig: {
-        temperature: 0.2, // Low temperature for high consistency and classification reliability
+        temperature: 0.1,
         responseMimeType: 'application/json',
       },
     });
 
-    const prompt = `
-Act as a strict, expert mental wellness analytics engine.
-Analyze the user's journal reflection and determine:
-1. sentimentScore: A mathematical score from 1 to 10 (1 being severe distress/sadness, 10 being highly positive/joyful).
-2. trigger: The primary human-readable trigger of their state (e.g., "exam", "family", "sleep", "social", "work", "health", or "general" if not clear).
-3. suggestedCategory: A string based on the sentiment score:
-   - Scores 1-4 assign "Coping"
-   - Scores 5-7 assign "Mindfulness"
-   - Scores 8-10 assign "Encouragement"
+    const sentimentPrompt = `
+Analyze the user's reflection and extract a math sentiment score from 1 (deep distress) to 10 (high joy).
+Reflection: "${text}"
 
-User Reflection: "${text}"
-
-Output MUST match this exact JSON schema:
+Output MUST match this JSON schema:
 {
-  "sentimentScore": number,
-  "trigger": "string",
-  "suggestedCategory": "Coping" | "Mindfulness" | "Encouragement"
+  "sentimentScore": number
 }
 `;
 
-    const result = await model.generateContent(prompt);
+    const result = await sentimentModel.generateContent(sentimentPrompt);
     const responseText = result.response.text();
     const data = JSON.parse(responseText);
 
@@ -135,27 +196,17 @@ Output MUST match this exact JSON schema:
         ? Math.max(1, Math.min(10, Math.round(data.sentimentScore)))
         : 5;
 
-    const trigger = typeof data.trigger === 'string' ? data.trigger.trim().toLowerCase() : 'general';
-
-    let category: 'Coping' | 'Mindfulness' | 'Encouragement' = 'Mindfulness';
-    if (
-      data.suggestedCategory === 'Coping' ||
-      data.suggestedCategory === 'Mindfulness' ||
-      data.suggestedCategory === 'Encouragement'
-    ) {
-      category = data.suggestedCategory;
-    } else {
-      category = score <= 4 ? 'Coping' : score <= 7 ? 'Mindfulness' : 'Encouragement';
-    }
+    const suggestedCategory =
+      score <= 4 ? 'Coping' : score <= 7 ? 'Mindfulness' : 'Encouragement';
 
     return {
       text,
       sentimentScore: score,
-      trigger,
-      suggestedCategory: category,
+      trigger: matchedTrigger,
+      suggestedCategory,
     };
   } catch (error) {
-    console.warn('Gemini analytics engine failed, falling back to local analysis:', error);
+    console.warn('Gemini Semantic NLP pipeline failed, falling back to local analysis:', error);
     return localFallbackAnalysis(text);
   }
 }
