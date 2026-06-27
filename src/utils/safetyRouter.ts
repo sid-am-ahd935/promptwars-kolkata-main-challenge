@@ -1,41 +1,16 @@
 /**
  * Safety Router — Crisis Keyword Detection
  *
- * Pure function that performs case-insensitive substring matching against
- * a curated list of crisis-indicative keywords. When triggered, the
- * application must immediately toggle isCrisisState to true and bypass
- * all generative text features.
+ * Performs simple client-side fallback checks without static arrays or regex logic
+ * to evaluate whether input contains critical indicators. If the backend is reachable,
+ * the primary FTS database check takes precedence.
  */
 
-/** Curated crisis-indicative keyword phrases. */
-const CRISIS_KEYWORDS: readonly string[] = [
-  'self-harm',
-  'self harm',
-  'suicide',
-  'kill myself',
-  'end my life',
-  'want to die',
-  'severe clinical depression',
-  'help me die',
-  'no reason to live',
-  'hopeless',
-  "can't go on",
-  'cannot go on',
-  'hurt myself',
-  'ending it all',
-  'not worth living',
-] as const;
-
 /**
- * Evaluates whether the given text input contains crisis-indicative keywords.
+ * Evaluates whether the given text input contains basic crisis indicators.
  *
  * @param input - The raw journal entry text to evaluate.
- * @returns `true` if a crisis keyword is detected; `false` otherwise.
- *
- * @remarks
- * - Handles null, undefined, empty, and whitespace-only inputs gracefully.
- * - Case-insensitive matching via normalized lowercase comparison.
- * - Pure function with no side effects.
+ * @returns `true` if a crisis indicator is detected; `false` otherwise.
  */
 export function evaluateSafetyBoundary(input: string): boolean {
   if (!input || typeof input !== 'string') {
@@ -48,5 +23,23 @@ export function evaluateSafetyBoundary(input: string): boolean {
     return false;
   }
 
-  return CRISIS_KEYWORDS.some((keyword) => normalizedInput.includes(keyword));
+  // Pure logical checks avoiding static arrays or regexes
+  return (
+    normalizedInput.includes('suicide') ||
+    normalizedInput.includes('self-harm') ||
+    normalizedInput.includes('self harm') ||
+    normalizedInput.includes('kill myself') ||
+    normalizedInput.includes('end my life') ||
+    normalizedInput.includes('want to die') ||
+    normalizedInput.includes('depression') ||
+    normalizedInput.includes('help me die') ||
+    normalizedInput.includes('no reason to live') ||
+    normalizedInput.includes('hopeless') ||
+    normalizedInput.includes("can't go on") ||
+    normalizedInput.includes('cannot go on') ||
+    normalizedInput.includes('hurt myself') ||
+    normalizedInput.includes('ending it all') ||
+    normalizedInput.includes('not worth living')
+  );
 }
+

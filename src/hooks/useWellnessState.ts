@@ -203,22 +203,21 @@ export function useWellnessState(): WellnessStateActions {
 
   /**
    * Adds a new journal entry through the full processing pipeline:
-   * 1. Check safety boundary synchronously first. If crisis, bypass all generative AI.
-   * 2. Otherwise, add placeholder entry to show loading indicators.
-   * 3. Trigger async Gemini analysis.
-   * 4. Once analysis resolves, update the entry details and episodic graph.
-   * 5. Save details to Vercel Postgres under active user profile context.
-   * 6. Trigger async coping strategy generation using final metrics.
+   * 1. Check local safety boundary first for offline fast safety.
+   * 2. Add placeholder entry to show loading indicators.
+   * 3. Send text to Vercel Postgres first to evaluate FTS database safety.
+   * 4. Read database-level isCrisis flag. If true, bypass LLM and trigger CrisisCard immediately.
+   * 5. If false, run async Gemini analytics and coping strategy, updating the database record on completion.
    */
   const addEntry = useCallback((text: string): void => {
     const trimmedText = text.trim();
     if (trimmedText.length === 0) return;
 
-    const isCrisis = evaluateSafetyBoundary(trimmedText);
+    const isLocalCrisis = evaluateSafetyBoundary(trimmedText);
     const entryId = generateId();
 
-    if (isCrisis) {
-      // Synchronously bypass all generative elements
+    if (isLocalCrisis) {
+      // Synchronously bypass all generative elements locally
       const entry: JournalEntry = {
         id: entryId,
         timestamp: new Date().toISOString(),
@@ -253,11 +252,13 @@ export function useWellnessState(): WellnessStateActions {
           return res.json();
         })
         .then((data) => {
-          if (data && data.id) {
+          const resolvedDbId = data?.data?.id || data?.id;
+          const resolvedDbTime = data?.data?.timestamp || data?.timestamp;
+          if (resolvedDbId) {
             setState((prev) => ({
               ...prev,
               entries: prev.entries.map((e) =>
-                e.id === entryId ? { ...e, id: data.id, timestamp: data.timestamp } : e
+                e.id === entryId ? { ...e, id: resolvedDbId, timestamp: resolvedDbTime } : e
               ),
             }));
           }
@@ -284,64 +285,110 @@ export function useWellnessState(): WellnessStateActions {
       entries: [placeholderEntry, ...prev.entries],
     }));
 
-    // Trigger async Gemini LLM analysis
-    let finalAnalysis: any = null;
-    analyzeJournalEntry(trimmedText)
-      .then((analysis) => {
-        finalAnalysis = analysis;
-        setState((prev) => {
-          const updatedEntries = prev.entries.map((e) =>
-            e.id === entryId ? { ...e, ...analysis } : e
-          );
-          const resolvedEntry = updatedEntries.find((e) => e.id === entryId) || placeholderEntry;
-
-          return {
-            ...prev,
-            entries: updatedEntries,
-            episodicGraph: updateEpisodicGraph(prev.episodicGraph, resolvedEntry),
-          };
-        });
-
-        // Trigger dynamic strategy after analytics resolve
-        return generateDynamicStrategy(analysis.trigger, analysis.sentimentScore);
-      })
-      .then((strategy) => {
-        if (strategy) {
-          updateEntryStrategy(entryId, strategy);
-        }
-
-        // Save entry details to Vercel Postgres database under user context
-        if (finalAnalysis) {
-          return fetch('/api/log-reflection', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              text: trimmedText,
-              sentimentScore: finalAnalysis.sentimentScore,
-              trigger: finalAnalysis.trigger,
-              suggestedCategory: finalAnalysis.suggestedCategory,
-              userId: activeUser?.id,
-            }),
-          });
-        }
-        throw new Error('Analysis missing');
-      })
+    // Post to log-reflection to perform Postgres Full-Text Search safety check
+    fetch('/api/log-reflection', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        text: trimmedText,
+        userId: activeUser?.id,
+        sentimentScore: 5,
+        trigger: 'analyzing...',
+        suggestedCategory: 'Mindfulness',
+      }),
+    })
       .then((res) => {
-        if (!res.ok) throw new Error('Database insertion failed');
+        if (!res.ok) throw new Error('Initial log fetch failed');
         return res.json();
       })
       .then((data) => {
-        if (data && data.id) {
+        // Read isCrisis flag from database response
+        if (data && data.isCrisis) {
+          const resolvedDbId = data?.data?.id || data?.id || entryId;
+          const resolvedDbTime = data?.data?.timestamp || data?.timestamp || new Date().toISOString();
           setState((prev) => ({
             ...prev,
+            isCrisisState: true,
             entries: prev.entries.map((e) =>
-              e.id === entryId ? { ...e, id: data.id, timestamp: data.timestamp } : e
+              e.id === entryId
+                ? {
+                    ...e,
+                    id: resolvedDbId,
+                    timestamp: resolvedDbTime,
+                    sentimentScore: 1,
+                    trigger: 'Immediate Crisis Support',
+                    suggestedCategory: 'Coping',
+                    dynamicStrategy: 'Crisis hotline support is active. Please use the resources below.',
+                  }
+                : e
             ),
           }));
+          return;
         }
+
+        // If not crisis, run the LLM analytics and dynamic strategy fetch
+        let finalAnalysis: any = null;
+        const resolvedId = data?.data?.id || data?.id || entryId;
+        const resolvedTimestamp = data?.data?.timestamp || data?.timestamp || new Date().toISOString();
+
+        analyzeJournalEntry(trimmedText)
+          .then((analysis) => {
+            finalAnalysis = analysis;
+            setState((prev) => {
+              const updatedEntries = prev.entries.map((e) =>
+                e.id === entryId ? { ...e, ...analysis, id: resolvedId, timestamp: resolvedTimestamp } : e
+              );
+              const resolvedEntry = updatedEntries.find((e) => e.id === resolvedId) || placeholderEntry;
+
+              return {
+                ...prev,
+                entries: updatedEntries,
+                episodicGraph: updateEpisodicGraph(prev.episodicGraph, resolvedEntry),
+              };
+            });
+
+            return generateDynamicStrategy(analysis.trigger, analysis.sentimentScore);
+          })
+          .then((strategy) => {
+            if (strategy) {
+              updateEntryStrategy(resolvedId, strategy);
+            }
+
+            // Sync the finalized metrics back to the database record
+            if (finalAnalysis) {
+              fetch('/api/log-reflection', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  text: trimmedText,
+                  sentimentScore: finalAnalysis.sentimentScore,
+                  trigger: finalAnalysis.trigger,
+                  suggestedCategory: finalAnalysis.suggestedCategory,
+                  userId: activeUser?.id,
+                  updateId: resolvedId,
+                }),
+              }).catch((err) => console.warn('Failed to finalize Postgres log metrics:', err));
+            }
+          });
       })
       .catch((error) => {
-        console.warn('Async analysis, strategy, or database save failed:', error);
+        console.warn('Postgres FTS safety routing unavailable, running client local fallback:', error);
+        // Local simulation fallback
+        analyzeJournalEntry(trimmedText)
+          .then((analysis) => {
+            setState((prev) => ({
+              ...prev,
+              entries: prev.entries.map((e) =>
+                e.id === entryId ? { ...e, ...analysis } : e
+              ),
+            }));
+            return generateDynamicStrategy(analysis.trigger, analysis.sentimentScore);
+          })
+          .then((strategy) => {
+            if (strategy) {
+              updateEntryStrategy(entryId, strategy);
+            }
+          });
       });
   }, [updateEntryStrategy, activeUser]);
 
