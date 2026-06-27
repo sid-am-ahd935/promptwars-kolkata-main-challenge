@@ -16,14 +16,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(200).end();
   }
 
-  if (req.method !== 'POST') {
+  if (req.method !== 'GET') {
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
-  const { text, sentimentScore, trigger, suggestedCategory, userId, username } = req.body;
+  const { userId } = req.query;
 
-  if (!text || typeof text !== 'string') {
-    return res.status(400).json({ error: 'Text field is required' });
+  if (!userId || typeof userId !== 'string') {
+    return res.status(400).json({ error: 'userId query parameter is required' });
   }
 
   try {
@@ -47,37 +47,22 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       );
     `;
 
-    let resolvedUserId = userId;
-
-    // Resolve user ID if username is provided
-    if (username) {
-      const userRes = await sql`
-        INSERT INTO user_profiles (username)
-        VALUES (${username.trim()})
-        ON CONFLICT (username) DO UPDATE SET username = EXCLUDED.username
-        RETURNING id;
-      `;
-      resolvedUserId = userRes.rows[0].id;
-    }
-
-    if (!resolvedUserId) {
-      return res.status(400).json({ error: 'Valid userId or username is required' });
-    }
-
     const result = await sql`
-      INSERT INTO user_journal_events (user_id, raw_text, sentiment_score, trigger_label, suggested_category)
-      VALUES (${resolvedUserId}, ${text}, ${sentimentScore || 5}, ${trigger || 'general'}, ${suggestedCategory || 'Mindfulness'})
-      RETURNING id, timestamp;
+      SELECT * FROM user_journal_events WHERE user_id = ${userId} ORDER BY timestamp DESC;
     `;
 
-    const createdRecord = result.rows[0];
-    return res.status(200).json({
-      id: createdRecord.id,
-      timestamp: createdRecord.timestamp,
-      userId: resolvedUserId,
-    });
+    const entries = result.rows.map((row) => ({
+      id: row.id,
+      timestamp: row.timestamp,
+      text: row.raw_text,
+      sentimentScore: row.sentiment_score,
+      trigger: row.trigger_label,
+      suggestedCategory: row.suggested_category,
+    }));
+
+    return res.status(200).json(entries);
   } catch (error: any) {
-    console.error('Database insertion error:', error);
-    return res.status(500).json({ error: 'Database operation failed', details: error.message });
+    console.error('Database fetch reflections error:', error);
+    return res.status(500).json({ error: 'Database fetch failed', details: error.message });
   }
 }

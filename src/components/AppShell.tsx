@@ -16,6 +16,8 @@ type TabId = 'journal' | 'analytics';
 const AppShell: React.FC = () => {
   const {
     state,
+    activeUser,
+    loginUser,
     addEntry,
     setFilters,
     resetCrisis,
@@ -26,6 +28,7 @@ const AppShell: React.FC = () => {
 
   const [activeTab, setActiveTab] = useState<TabId>('journal');
   const [showContextGraph, setShowContextGraph] = useState(false);
+  const [usernameInput, setUsernameInput] = useState('');
 
   const handleTabChange = useCallback((tab: TabId) => {
     setActiveTab(tab);
@@ -34,6 +37,15 @@ const AppShell: React.FC = () => {
   const toggleContextGraph = useCallback(() => {
     setShowContextGraph((prev) => !prev);
   }, []);
+
+  const handleLoginSubmit = useCallback((e: React.FormEvent) => {
+    e.preventDefault();
+    const trimmed = usernameInput.trim();
+    if (trimmed) {
+      loginUser(trimmed);
+      setUsernameInput('');
+    }
+  }, [usernameInput, loginUser]);
 
   const averageSentiment = useMemo(() => {
     if (state.entries.length === 0) return 0;
@@ -52,6 +64,27 @@ const AppShell: React.FC = () => {
             <p className="app-shell__subtitle">Mental Wellness Tracker</p>
           </div>
         </div>
+
+        {/* Profile Switch Gate */}
+        <div className="app-shell__user-gate">
+          <span className="app-shell__user-active" aria-live="polite">
+            👤 {activeUser?.username || 'Guest'}
+          </span>
+          <form className="app-shell__user-form" onSubmit={handleLoginSubmit}>
+            <input
+              type="text"
+              placeholder="Switch account..."
+              value={usernameInput}
+              onChange={(e) => setUsernameInput(e.target.value)}
+              className="app-shell__user-input"
+              aria-label="Username for profile gate"
+            />
+            <button type="submit" className="app-shell__user-btn" aria-label="Switch User">
+              Switch
+            </button>
+          </form>
+        </div>
+
         <button
           className={`app-shell__context-toggle ${showContextGraph ? 'app-shell__context-toggle--active' : ''}`}
           onClick={toggleContextGraph}

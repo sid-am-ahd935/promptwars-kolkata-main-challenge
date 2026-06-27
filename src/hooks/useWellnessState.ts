@@ -51,9 +51,16 @@ export interface TrendPoint {
   label: string;
 }
 
+export interface UserProfile {
+  id: string;
+  username: string;
+}
+
 /** Return type of the useWellnessState hook. */
 export interface WellnessStateActions {
   state: MentalWellnessState;
+  activeUser: UserProfile | null;
+  loginUser: (username: string) => Promise<void>;
   addEntry: (text: string) => void;
   setFilters: (filters: Partial<ActiveFilters>) => void;
   resetCrisis: () => void;
@@ -69,27 +76,78 @@ export interface WellnessStateActions {
  */
 export function useWellnessState(): WellnessStateActions {
   const [state, setState] = useState<MentalWellnessState>(INITIAL_STATE);
+  const [activeUser, setActiveUser] = useState<UserProfile | null>(null);
 
-  // Fetch MCP context and Postgres database reflections on mount
+  // Initialize MCP context on mount
   useEffect(() => {
     let cancelled = false;
-
-    // Fetch MCP Study logs
     fetchMcpContext().then((context) => {
       if (!cancelled) {
         setState((prev) => ({ ...prev, mcpContext: context }));
       }
     });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
-    // Fetch historical reflections from the Vercel Postgres API
-    fetch('/api/reflections')
+  // Initialize user profile session on boot
+  useEffect(() => {
+    const savedUser = localStorage.getItem('mindflow_active_user');
+    if (savedUser) {
+      try {
+        const parsed = JSON.parse(savedUser);
+        if (parsed && parsed.id && parsed.username) {
+          setActiveUser(parsed);
+          return;
+        }
+      } catch (e) {
+        console.warn('Failed to parse saved user, clearing storage:', e);
+        localStorage.removeItem('mindflow_active_user');
+      }
+    }
+
+    // Default seed user
+    const defaultUsername = 'default_user';
+    fetch('/api/resolve-user', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: defaultUsername }),
+    })
       .then((res) => {
-        if (!res.ok) throw new Error('Failed to fetch from Postgres');
+        if (!res.ok) throw new Error('Failed to resolve default user');
+        return res.json();
+      })
+      .then((data) => {
+        setActiveUser(data);
+        localStorage.setItem('mindflow_active_user', JSON.stringify(data));
+      })
+      .catch((err) => {
+        console.warn('Postgres profile seeding unavailable, running in local guest mode:', err);
+        const offlineUser = { id: 'offline-uuid', username: defaultUsername };
+        setActiveUser(offlineUser);
+      });
+  }, []);
+
+  // Fetch reflections matching ONLY the active user profile context to prevent cross-pollution
+  useEffect(() => {
+    if (!activeUser) return;
+    let cancelled = false;
+
+    // Reset current list before loading next user
+    setState((prev) => ({
+      ...prev,
+      entries: [],
+      episodicGraph: { nodes: [], edges: [] },
+    }));
+
+    fetch(`/api/get-reflections?userId=${activeUser.id}`)
+      .then((res) => {
+        if (!res.ok) throw new Error('Failed to fetch user reflections');
         return res.json();
       })
       .then((data) => {
         if (!cancelled && Array.isArray(data)) {
-          // Rebuild episodic graph dynamically from historical records
           let tempGraph: EpisodicGraph = { nodes: [], edges: [] };
           for (const entry of data) {
             tempGraph = updateEpisodicGraph(tempGraph, entry);
@@ -108,6 +166,29 @@ export function useWellnessState(): WellnessStateActions {
     return () => {
       cancelled = true;
     };
+  }, [activeUser]);
+
+  /** Seeks or inserts profile context in Vercel Postgres database */
+  const loginUser = useCallback(async (username: string): Promise<void> => {
+    const cleanUsername = username.trim();
+    if (!cleanUsername) return;
+
+    try {
+      const res = await fetch('/api/resolve-user', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: cleanUsername }),
+      });
+      if (!res.ok) throw new Error('API user resolution failed');
+      const data = await res.json();
+      setActiveUser(data);
+      localStorage.setItem('mindflow_active_user', JSON.stringify(data));
+    } catch (err) {
+      console.warn('Failed to resolve profile gate, running offline profile:', err);
+      const offlineUser = { id: `offline-${Date.now()}`, username: cleanUsername };
+      setActiveUser(offlineUser);
+      localStorage.setItem('mindflow_active_user', JSON.stringify(offlineUser));
+    }
   }, []);
 
   /** Updates the dynamic coping strategy for a specific entry. */
@@ -126,7 +207,7 @@ export function useWellnessState(): WellnessStateActions {
    * 2. Otherwise, add placeholder entry to show loading indicators.
    * 3. Trigger async Gemini analysis.
    * 4. Once analysis resolves, update the entry details and episodic graph.
-   * 5. Save details to Vercel Postgres and sync ID/timestamp.
+   * 5. Save details to Vercel Postgres under active user profile context.
    * 6. Trigger async coping strategy generation using final metrics.
    */
   const addEntry = useCallback((text: string): void => {
@@ -155,7 +236,7 @@ export function useWellnessState(): WellnessStateActions {
         episodicGraph: updateEpisodicGraph(prev.episodicGraph, entry),
       }));
 
-      // Async save crisis event to DB
+      // Async save crisis event to DB under user context
       fetch('/api/log-reflection', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -164,6 +245,7 @@ export function useWellnessState(): WellnessStateActions {
           sentimentScore: 1,
           trigger: 'crisis',
           suggestedCategory: 'Coping',
+          userId: activeUser?.id,
         }),
       })
         .then((res) => {
@@ -228,7 +310,7 @@ export function useWellnessState(): WellnessStateActions {
           updateEntryStrategy(entryId, strategy);
         }
 
-        // Save entry details to Vercel Postgres database
+        // Save entry details to Vercel Postgres database under user context
         if (finalAnalysis) {
           return fetch('/api/log-reflection', {
             method: 'POST',
@@ -238,6 +320,7 @@ export function useWellnessState(): WellnessStateActions {
               sentimentScore: finalAnalysis.sentimentScore,
               trigger: finalAnalysis.trigger,
               suggestedCategory: finalAnalysis.suggestedCategory,
+              userId: activeUser?.id,
             }),
           });
         }
@@ -260,7 +343,7 @@ export function useWellnessState(): WellnessStateActions {
       .catch((error) => {
         console.warn('Async analysis, strategy, or database save failed:', error);
       });
-  }, [updateEntryStrategy]);
+  }, [updateEntryStrategy, activeUser]);
 
 
   /** Updates active filters (partial merge). */
@@ -339,6 +422,8 @@ export function useWellnessState(): WellnessStateActions {
 
   return {
     state,
+    activeUser,
+    loginUser,
     addEntry,
     setFilters,
     resetCrisis,
