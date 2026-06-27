@@ -316,7 +316,7 @@ export function useWellnessState(): WellnessStateActions {
                     id: resolvedDbId,
                     timestamp: resolvedDbTime,
                     sentimentScore: 1,
-                    trigger: 'Immediate Crisis Support',
+                    trigger: 'Semantic Crisis Trigger Detected',
                     suggestedCategory: 'Coping',
                     dynamicStrategy: 'Crisis hotline support is active. Please use the resources below.',
                   }

@@ -1,5 +1,6 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { sql } from '@vercel/postgres';
+import { GoogleGenerativeAI } from '@google/generative-ai';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   // CORS Headers
@@ -27,7 +28,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   try {
-    // Lazily create core tables
+    // Lazily create core tables if not exist
     await sql`
       CREATE TABLE IF NOT EXISTS user_profiles (
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -46,37 +47,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         suggested_category TEXT NOT NULL
       );
     `;
-
-    await sql`
-      CREATE TABLE IF NOT EXISTS crisis_dictionary (
-        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-        phrase TEXT UNIQUE NOT NULL
-      );
-    `;
-
-    // Seed crisis dictionary if empty
-    const countRes = await sql`SELECT count(*) FROM crisis_dictionary;`;
-    if (parseInt(countRes.rows[0].count, 10) === 0) {
-      const crisisPhrases = [
-        'self-harm',
-        'suicide',
-        'kill myself',
-        'end my life',
-        'want to die',
-        'severe clinical depression',
-        'help me die',
-        'no reason to live',
-        'hopeless',
-        "can't go on",
-        'cannot go on',
-        'hurt myself',
-        'ending it all',
-        'not worth living',
-      ];
-      for (const phrase of crisisPhrases) {
-        await sql`INSERT INTO crisis_dictionary (phrase) VALUES (${phrase}) ON CONFLICT DO NOTHING;`;
-      }
-    }
 
     // Resolve user ID if username is provided
     let resolvedUserId = userId;
@@ -106,20 +76,42 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return res.status(400).json({ error: 'Valid userId or username is required' });
     }
 
-    // Perform database-driven Full-Text Search safety router check
-    const checkRes = await sql`
-      SELECT EXISTS (
-        SELECT 1 FROM crisis_dictionary
-        WHERE to_tsvector('english', ${text}) @@ plainto_tsquery('english', phrase)
-      ) AS is_crisis;
-    `;
-    const isCrisis = checkRes.rows[0]?.is_crisis === true;
+    // Upfront Zero-Shot Semantic Safety Classifier via Gemini
+    const apiKey = process.env.VITE_GEMINI_API_KEY || (import.meta.env as any)?.VITE_GEMINI_API_KEY;
+    let isCrisis = false;
+
+    if (apiKey && typeof apiKey === 'string' && apiKey.trim().length > 0) {
+      try {
+        const genAI = new GoogleGenerativeAI(apiKey);
+        const guardrailModel = genAI.getGenerativeModel({
+          model: 'gemini-2.5-flash',
+          generationConfig: {
+            temperature: 0.1,
+            responseMimeType: 'application/json',
+          },
+          systemInstruction: 'You are a clinical safety classifier. Analyze the incoming text for underlying implicit or explicit intent of suicide, severe self-harm, or deep crisis. Do not rely on specific keywords; evaluate the semantic meaning and psychological intent of the user\'s expression.',
+        });
+
+        const prompt = `Evaluate the semantic safety of the following reflection: "${text}". Output MUST match this JSON schema: { "isCrisis": boolean }`;
+        const checkRes = await guardrailModel.generateContent(prompt);
+        const safetyData = JSON.parse(checkRes.response.text());
+        isCrisis = safetyData.isCrisis === true;
+      } catch (error) {
+        console.warn('Gemini safety classification failed, falling back to local fallback rules:', error);
+        const clean = text.toLowerCase();
+        isCrisis = clean.includes('suicide') || clean.includes('self-harm') || clean.includes('kill myself') || clean.includes('end my life') || clean.includes('want to die');
+      }
+    } else {
+      // Local fallback rules on backend if API key is not present
+      const clean = text.toLowerCase();
+      isCrisis = clean.includes('suicide') || clean.includes('self-harm') || clean.includes('kill myself') || clean.includes('end my life') || clean.includes('want to die');
+    }
 
     if (isCrisis) {
-      // Bypasses the LLM pipeline on the backend. Programmatically insert the crisis event.
+      // Short-circuit the pipeline immediately. Programmatically insert the crisis event.
       const insertRes = await sql`
         INSERT INTO user_journal_events (user_id, raw_text, sentiment_score, trigger_label, suggested_category)
-        VALUES (${resolvedUserId}, ${text}, 1, 'Immediate Crisis Support', 'Coping')
+        VALUES (${resolvedUserId}, ${text}, 1, 'Semantic Crisis Trigger Detected', 'Coping')
         RETURNING id, timestamp;
       `;
       return res.status(200).json({
@@ -129,7 +121,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           id: insertRes.rows[0].id,
           timestamp: insertRes.rows[0].timestamp,
           sentimentScore: 1,
-          trigger: 'Immediate Crisis Support',
+          trigger: 'Semantic Crisis Trigger Detected',
           suggestedCategory: 'Coping',
         },
       });
