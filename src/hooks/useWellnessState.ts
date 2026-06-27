@@ -241,9 +241,6 @@ export function useWellnessState(): WellnessStateActions {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           text: trimmedText,
-          sentimentScore: 1,
-          trigger: 'crisis',
-          suggestedCategory: 'Coping',
           userId: activeUser?.id,
         }),
       })
@@ -285,60 +282,74 @@ export function useWellnessState(): WellnessStateActions {
       entries: [placeholderEntry, ...prev.entries],
     }));
 
-    // Post to log-reflection to perform Postgres Full-Text Search safety check
+    // Post to unified log-reflection endpoint
     fetch('/api/log-reflection', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         text: trimmedText,
         userId: activeUser?.id,
-        sentimentScore: 5,
-        trigger: 'analyzing...',
-        suggestedCategory: 'Mindfulness',
       }),
     })
       .then((res) => {
-        if (!res.ok) throw new Error('Initial log fetch failed');
+        if (!res.ok) throw new Error('Unified insight log fetch failed');
         return res.json();
       })
       .then((data) => {
-        // Read isCrisis flag from database response
+        const payload = data?.data;
+        const resolvedId = payload?.id || data?.id || entryId;
+        const resolvedTimestamp = payload?.timestamp || data?.timestamp || new Date().toISOString();
+
         if (data && data.isCrisis) {
-          const resolvedDbId = data?.data?.id || data?.id || entryId;
-          const resolvedDbTime = data?.data?.timestamp || data?.timestamp || new Date().toISOString();
+          // If crisis detected on backend, instantly transition state to display helper elements
+          const crisisEntry: JournalEntry = {
+            id: resolvedId,
+            timestamp: resolvedTimestamp,
+            text: trimmedText,
+            sentimentScore: 1,
+            trigger: 'Semantic Crisis Trigger Detected',
+            suggestedCategory: 'Coping',
+            dynamicStrategy: payload?.agentResponseText || 'Crisis support is active. Please use the resources below.',
+          };
+
           setState((prev) => ({
             ...prev,
             isCrisisState: true,
-            entries: prev.entries.map((e) =>
-              e.id === entryId
-                ? {
-                    ...e,
-                    id: resolvedDbId,
-                    timestamp: resolvedDbTime,
-                    sentimentScore: 1,
-                    trigger: 'Semantic Crisis Trigger Detected',
-                    suggestedCategory: 'Coping',
-                    dynamicStrategy: 'Crisis hotline support is active. Please use the resources below.',
-                  }
-                : e
-            ),
+            entries: prev.entries.map((e) => (e.id === entryId ? crisisEntry : e)),
+            episodicGraph: updateEpisodicGraph(prev.episodicGraph, crisisEntry),
           }));
           return;
         }
 
-        // If not crisis, run the LLM analytics and dynamic strategy fetch
-        let finalAnalysis: any = null;
-        const resolvedId = data?.data?.id || data?.id || entryId;
-        const resolvedTimestamp = data?.data?.timestamp || data?.timestamp || new Date().toISOString();
+        // Standard non-crisis path using resolved API payload directly
+        if (payload) {
+          const resolvedEntry: JournalEntry = {
+            id: resolvedId,
+            timestamp: resolvedTimestamp,
+            text: trimmedText,
+            sentimentScore: payload.sentimentScore,
+            trigger: payload.extractedTrigger,
+            suggestedCategory: payload.suggestedCategory,
+            dynamicStrategy: payload.agentResponseText,
+          };
 
+          setState((prev) => ({
+            ...prev,
+            entries: prev.entries.map((e) => (e.id === entryId ? resolvedEntry : e)),
+            episodicGraph: updateEpisodicGraph(prev.episodicGraph, resolvedEntry),
+          }));
+        }
+      })
+      .catch((error) => {
+        console.warn('Unified backend insight engine unavailable, using frontend fallback:', error);
+        // Fallback simulation sequence
         analyzeJournalEntry(trimmedText)
           .then((analysis) => {
-            finalAnalysis = analysis;
             setState((prev) => {
               const updatedEntries = prev.entries.map((e) =>
-                e.id === entryId ? { ...e, ...analysis, id: resolvedId, timestamp: resolvedTimestamp } : e
+                e.id === entryId ? { ...e, ...analysis } : e
               );
-              const resolvedEntry = updatedEntries.find((e) => e.id === resolvedId) || placeholderEntry;
+              const resolvedEntry = updatedEntries.find((e) => e.id === entryId) || placeholderEntry;
 
               return {
                 ...prev,
@@ -347,41 +358,6 @@ export function useWellnessState(): WellnessStateActions {
               };
             });
 
-            return generateDynamicStrategy(analysis.trigger, analysis.sentimentScore);
-          })
-          .then((strategy) => {
-            if (strategy) {
-              updateEntryStrategy(resolvedId, strategy);
-            }
-
-            // Sync the finalized metrics back to the database record
-            if (finalAnalysis) {
-              fetch('/api/log-reflection', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                  text: trimmedText,
-                  sentimentScore: finalAnalysis.sentimentScore,
-                  trigger: finalAnalysis.trigger,
-                  suggestedCategory: finalAnalysis.suggestedCategory,
-                  userId: activeUser?.id,
-                  updateId: resolvedId,
-                }),
-              }).catch((err) => console.warn('Failed to finalize Postgres log metrics:', err));
-            }
-          });
-      })
-      .catch((error) => {
-        console.warn('Postgres FTS safety routing unavailable, running client local fallback:', error);
-        // Local simulation fallback
-        analyzeJournalEntry(trimmedText)
-          .then((analysis) => {
-            setState((prev) => ({
-              ...prev,
-              entries: prev.entries.map((e) =>
-                e.id === entryId ? { ...e, ...analysis } : e
-              ),
-            }));
             return generateDynamicStrategy(analysis.trigger, analysis.sentimentScore);
           })
           .then((strategy) => {

@@ -21,14 +21,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
-  const { text, sentimentScore, trigger, suggestedCategory, userId, username, updateId } = req.body;
+  const { text, userId, username } = req.body;
 
   if (!text || typeof text !== 'string') {
     return res.status(400).json({ error: 'Text field is required' });
   }
 
   try {
-    // Lazily create core tables if not exist
+    // Lazily create core tables
     await sql`
       CREATE TABLE IF NOT EXISTS user_profiles (
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -60,92 +60,119 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       resolvedUserId = userRes.rows[0].id;
     }
 
-    // Handle updates to existing reflections
-    if (updateId) {
-      await sql`
-        UPDATE user_journal_events
-        SET sentiment_score = ${sentimentScore},
-            trigger_label = ${trigger},
-            suggested_category = ${suggestedCategory}
-        WHERE id = ${updateId};
-      `;
-      return res.status(200).json({ success: true });
-    }
-
     if (!resolvedUserId) {
       return res.status(400).json({ error: 'Valid userId or username is required' });
     }
 
-    // Upfront Zero-Shot Semantic Safety Classifier via Gemini
+    // Call the Unified Multidimensional AI Insight Engine via Gemini
     const apiKey = process.env.VITE_GEMINI_API_KEY || (import.meta.env as any)?.VITE_GEMINI_API_KEY;
-    let isCrisis = false;
+    let insight = {
+      isCrisis: false,
+      sentimentScore: 5,
+      extractedTrigger: 'general',
+      suggestedCategory: 'Mindfulness',
+      agentResponseText: 'Thank you for sharing your reflection today. Let\'s continue tracking your wellness.',
+    };
 
     if (apiKey && typeof apiKey === 'string' && apiKey.trim().length > 0) {
       try {
         const genAI = new GoogleGenerativeAI(apiKey);
-        const guardrailModel = genAI.getGenerativeModel({
+        const model = genAI.getGenerativeModel({
           model: 'gemini-2.5-flash',
           generationConfig: {
-            temperature: 0.1,
+            temperature: 0.2,
             responseMimeType: 'application/json',
           },
-          systemInstruction: 'You are a clinical safety classifier. Analyze the incoming text for underlying implicit or explicit intent of suicide, severe self-harm, or deep crisis. Do not rely on specific keywords; evaluate the semantic meaning and psychological intent of the user\'s expression.',
+          systemInstruction:
+            'Analyze the user\'s reflection text.\n' +
+            '1. Assess semantic psychological intent for crisis/self-harm. If present, set isCrisis to true, sentimentScore to 1, suggestedCategory to \'Coping\', extractedTrigger to \'crisis\', and agentResponseText to an immediate warm grounding statement.\n' +
+            '2. Otherwise, accurately calculate a sentiment score (1-10), extract the core environmental or academic trigger phrase (e.g. "exam", "family", "sleep", "social", "work", "health" or "general"), select the therapeutic category, and compose a personalized, two-sentence empathetic coping strategy under agentResponseText.',
         });
 
-        const prompt = `Evaluate the semantic safety of the following reflection: "${text}". Output MUST match this JSON schema: { "isCrisis": boolean }`;
-        const checkRes = await guardrailModel.generateContent(prompt);
-        const safetyData = JSON.parse(checkRes.response.text());
-        isCrisis = safetyData.isCrisis === true;
-      } catch (error) {
-        console.warn('Gemini safety classification failed, falling back to local fallback rules:', error);
+        const prompt = `Process this journal entry reflection text: "${text}".\nOutput MUST match this JSON schema exactly:\n{\n  "isCrisis": boolean,\n  "sentimentScore": number,\n  "extractedTrigger": "string",\n  "suggestedCategory": "Coping" | "Mindfulness" | "Encouragement",\n  "agentResponseText": "string"\n}`;
+        const result = await model.generateContent(prompt);
+        const data = JSON.parse(result.response.text());
+
+        insight = {
+          isCrisis: data.isCrisis === true,
+          sentimentScore: typeof data.sentimentScore === 'number' ? Math.max(1, Math.min(10, Math.round(data.sentimentScore))) : 5,
+          extractedTrigger: typeof data.extractedTrigger === 'string' ? data.extractedTrigger.trim().toLowerCase() : 'general',
+          suggestedCategory:
+            data.suggestedCategory === 'Coping' ||
+            data.suggestedCategory === 'Mindfulness' ||
+            data.suggestedCategory === 'Encouragement'
+              ? data.suggestedCategory
+              : 'Mindfulness',
+          agentResponseText: typeof data.agentResponseText === 'string' ? data.agentResponseText.trim() : 'We are here to support your reflection journey.',
+        };
+      } catch (err) {
+        console.warn('Gemini Unified Insight Engine failed, using local fallback:', err);
+        // Simple local extraction fallback logic on backend
         const clean = text.toLowerCase();
-        isCrisis = clean.includes('suicide') || clean.includes('self-harm') || clean.includes('kill myself') || clean.includes('end my life') || clean.includes('want to die');
+        const isCrisisLocal =
+          clean.includes('suicide') ||
+          clean.includes('self-harm') ||
+          clean.includes('kill myself') ||
+          clean.includes('end my life') ||
+          clean.includes('want to die');
+
+        if (isCrisisLocal) {
+          insight = {
+            isCrisis: true,
+            sentimentScore: 1,
+            extractedTrigger: 'crisis',
+            suggestedCategory: 'Coping',
+            agentResponseText: 'Immediate crisis support helpline options are available below. Please take care of yourself.',
+          };
+        }
       }
     } else {
-      // Local fallback rules on backend if API key is not present
+      // Local check if no API key is present
       const clean = text.toLowerCase();
-      isCrisis = clean.includes('suicide') || clean.includes('self-harm') || clean.includes('kill myself') || clean.includes('end my life') || clean.includes('want to die');
-    }
+      const isCrisisLocal =
+        clean.includes('suicide') ||
+        clean.includes('self-harm') ||
+        clean.includes('kill myself') ||
+        clean.includes('end my life') ||
+        clean.includes('want to die');
 
-    if (isCrisis) {
-      // Short-circuit the pipeline immediately. Programmatically insert the crisis event.
-      const insertRes = await sql`
-        INSERT INTO user_journal_events (user_id, raw_text, sentiment_score, trigger_label, suggested_category)
-        VALUES (${resolvedUserId}, ${text}, 1, 'Semantic Crisis Trigger Detected', 'Coping')
-        RETURNING id, timestamp;
-      `;
-      return res.status(200).json({
-        success: true,
-        isCrisis: true,
-        data: {
-          id: insertRes.rows[0].id,
-          timestamp: insertRes.rows[0].timestamp,
+      if (isCrisisLocal) {
+        insight = {
+          isCrisis: true,
           sentimentScore: 1,
-          trigger: 'Semantic Crisis Trigger Detected',
+          extractedTrigger: 'crisis',
           suggestedCategory: 'Coping',
-        },
-      });
+          agentResponseText: 'Immediate crisis support helpline options are available below. Please take care of yourself.',
+        };
+      }
     }
 
-    // Normal non-crisis insert
-    const result = await sql`
+    // Execute ONE clean SQL insert into Postgres user_journal_events
+    const insertRes = await sql`
       INSERT INTO user_journal_events (user_id, raw_text, sentiment_score, trigger_label, suggested_category)
-      VALUES (${resolvedUserId}, ${text}, ${sentimentScore || 5}, ${trigger || 'general'}, ${suggestedCategory || 'Mindfulness'})
+      VALUES (${resolvedUserId}, ${text}, ${insight.sentimentScore}, ${insight.extractedTrigger}, ${insight.suggestedCategory})
       RETURNING id, timestamp;
     `;
 
-    const createdRecord = result.rows[0];
+    const createdRecord = insertRes.rows[0];
+
+    // Return the full JSON payload back to the frontend client
     return res.status(200).json({
       success: true,
-      isCrisis: false,
+      isCrisis: insight.isCrisis,
       data: {
         id: createdRecord.id,
         timestamp: createdRecord.timestamp,
+        isCrisis: insight.isCrisis,
+        sentimentScore: insight.sentimentScore,
+        extractedTrigger: insight.extractedTrigger,
+        suggestedCategory: insight.suggestedCategory,
+        agentResponseText: insight.agentResponseText,
         userId: resolvedUserId,
       },
     });
   } catch (error: any) {
-    console.error('Database operation error:', error);
-    return res.status(500).json({ error: 'Database operation failed', details: error.message });
+    console.error('Unified Insight Engine error:', error);
+    return res.status(500).json({ error: 'Insight engine transaction failed', details: error.message });
   }
 }
