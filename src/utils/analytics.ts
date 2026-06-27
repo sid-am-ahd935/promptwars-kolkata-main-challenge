@@ -42,7 +42,7 @@ function cosineSimilarity(a: number[], b: number[]): number {
 
 /** Gets embedding vector using text-embedding-004 model. */
 async function getEmbedding(genAI: GoogleGenerativeAI, text: string): Promise<number[]> {
-  const model = genAI.getGenerativeModel({ model: 'text-embedding-004' });
+  const model = genAI.getGenerativeModel({ model: 'gemini-embedding-001' });
   const result = await model.embedContent(text);
   return result.embedding.values;
 }
@@ -170,7 +170,7 @@ export async function analyzeJournalEntry(
 
     // Tier 3: Guardrailed Sentiment Extraction
     const sentimentModel = genAI.getGenerativeModel({
-      model: 'gemini-1.5-flash',
+      model: 'gemini-2.5-flash',
       generationConfig: {
         temperature: 0.1,
         responseMimeType: 'application/json',
