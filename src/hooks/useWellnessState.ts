@@ -11,6 +11,7 @@ import type {
   MentalWellnessState,
   JournalEntry,
   ActiveFilters,
+  EpisodicGraph,
 } from '../types/wellness';
 import { evaluateSafetyBoundary } from '../utils/safetyRouter';
 import { analyzeJournalEntry } from '../utils/analytics';
@@ -69,14 +70,41 @@ export interface WellnessStateActions {
 export function useWellnessState(): WellnessStateActions {
   const [state, setState] = useState<MentalWellnessState>(INITIAL_STATE);
 
-  // Fetch MCP context on mount
+  // Fetch MCP context and Postgres database reflections on mount
   useEffect(() => {
     let cancelled = false;
+
+    // Fetch MCP Study logs
     fetchMcpContext().then((context) => {
       if (!cancelled) {
         setState((prev) => ({ ...prev, mcpContext: context }));
       }
     });
+
+    // Fetch historical reflections from the Vercel Postgres API
+    fetch('/api/reflections')
+      .then((res) => {
+        if (!res.ok) throw new Error('Failed to fetch from Postgres');
+        return res.json();
+      })
+      .then((data) => {
+        if (!cancelled && Array.isArray(data)) {
+          // Rebuild episodic graph dynamically from historical records
+          let tempGraph: EpisodicGraph = { nodes: [], edges: [] };
+          for (const entry of data) {
+            tempGraph = updateEpisodicGraph(tempGraph, entry);
+          }
+          setState((prev) => ({
+            ...prev,
+            entries: data,
+            episodicGraph: tempGraph,
+          }));
+        }
+      })
+      .catch((err) => {
+        console.warn('Postgres connection unavailable, running client-side local memory:', err);
+      });
+
     return () => {
       cancelled = true;
     };
@@ -98,7 +126,8 @@ export function useWellnessState(): WellnessStateActions {
    * 2. Otherwise, add placeholder entry to show loading indicators.
    * 3. Trigger async Gemini analysis.
    * 4. Once analysis resolves, update the entry details and episodic graph.
-   * 5. Trigger async coping strategy generation using final metrics.
+   * 5. Save details to Vercel Postgres and sync ID/timestamp.
+   * 6. Trigger async coping strategy generation using final metrics.
    */
   const addEntry = useCallback((text: string): void => {
     const trimmedText = text.trim();
@@ -125,6 +154,36 @@ export function useWellnessState(): WellnessStateActions {
         isCrisisState: true,
         episodicGraph: updateEpisodicGraph(prev.episodicGraph, entry),
       }));
+
+      // Async save crisis event to DB
+      fetch('/api/log-reflection', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          text: trimmedText,
+          sentimentScore: 1,
+          trigger: 'crisis',
+          suggestedCategory: 'Coping',
+        }),
+      })
+        .then((res) => {
+          if (!res.ok) throw new Error('Database insertion failed');
+          return res.json();
+        })
+        .then((data) => {
+          if (data && data.id) {
+            setState((prev) => ({
+              ...prev,
+              entries: prev.entries.map((e) =>
+                e.id === entryId ? { ...e, id: data.id, timestamp: data.timestamp } : e
+              ),
+            }));
+          }
+        })
+        .catch((err) => {
+          console.warn('Failed to persist crisis event:', err);
+        });
+
       return;
     }
 
@@ -144,8 +203,10 @@ export function useWellnessState(): WellnessStateActions {
     }));
 
     // Trigger async Gemini LLM analysis
+    let finalAnalysis: any = null;
     analyzeJournalEntry(trimmedText)
       .then((analysis) => {
+        finalAnalysis = analysis;
         setState((prev) => {
           const updatedEntries = prev.entries.map((e) =>
             e.id === entryId ? { ...e, ...analysis } : e
@@ -166,9 +227,38 @@ export function useWellnessState(): WellnessStateActions {
         if (strategy) {
           updateEntryStrategy(entryId, strategy);
         }
+
+        // Save entry details to Vercel Postgres database
+        if (finalAnalysis) {
+          return fetch('/api/log-reflection', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              text: trimmedText,
+              sentimentScore: finalAnalysis.sentimentScore,
+              trigger: finalAnalysis.trigger,
+              suggestedCategory: finalAnalysis.suggestedCategory,
+            }),
+          });
+        }
+        throw new Error('Analysis missing');
+      })
+      .then((res) => {
+        if (!res.ok) throw new Error('Database insertion failed');
+        return res.json();
+      })
+      .then((data) => {
+        if (data && data.id) {
+          setState((prev) => ({
+            ...prev,
+            entries: prev.entries.map((e) =>
+              e.id === entryId ? { ...e, id: data.id, timestamp: data.timestamp } : e
+            ),
+          }));
+        }
       })
       .catch((error) => {
-        console.warn('Async analysis or strategy fetch failed:', error);
+        console.warn('Async analysis, strategy, or database save failed:', error);
       });
   }, [updateEntryStrategy]);
 
